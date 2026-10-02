@@ -30,5 +30,6 @@ func Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(health{Status: "ok", Service: "ticksafe", Version: Version})
 	})
+	mux.HandleFunc(analyzePath, handleAnalyze)
 	return mux
 }
