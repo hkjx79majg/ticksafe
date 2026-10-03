@@ -87,6 +87,39 @@ go run ./cmd/ticksafe
 
 分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
 
+## 有界消息邮箱分析
+
+`POST /v1/schedules/mailbox/analyze` 在单核、区间 `[0,horizon)` 内模拟带固定优先级抢占的有界邮箱通信。任务字段沿用一次性任务的 `id`、`priority`、`release`、`deadline` 与相同约束（不含 `execution`），并以 `mailboxes` 声明邮箱、以 `actions` 描述程序：
+
+```json
+{
+  "horizon": 100,
+  "mailboxes": [
+    {"name": "M", "capacity": 2}
+  ],
+  "tasks": [
+    {"id": "S", "priority": 2, "release": 0, "deadline": 50,
+     "actions": [{"run": 5}, {"send": {"mailbox": "M", "message": "hi"}}]},
+    {"id": "R", "priority": 1, "release": 0, "deadline": 50,
+     "actions": [{"receive": "M"}, {"run": 3}]}
+  ]
+}
+```
+
+- `mailboxes`：1–256 项；`name` 遵循任务 `id` 规则且全局唯一，`capacity` 为 1–65535 的整数。
+- 每个任务的 `actions` 为 1–1024 项，每项恰有一个动词：`{"run":N}`（正整数微秒）、`{"send":{"mailbox":"M","message":"…"}}`、`{"receive":"M"}`（邮箱名为已声明邮箱名）；`message` 为 1–256 个 Unicode 码点。各任务及全部任务的 `run` 总量不得溢出 int64。以上任一约束失败均返回 422 `validation_failed`。
+- 邮箱先进先出，且只有 `run` 耗时：`send` 优先直接交付给最早阻塞的接收者（同刻按任务输入顺序）；否则有空位就入队，已满则发送者携消息阻塞。`receive` 从非空邮箱取队首；若取出前邮箱已满，最早阻塞发送者的消息立即补到队尾并解除其阻塞；空邮箱使接收者阻塞。通信不改变优先级。
+- 状态变化后先排空当前任务连续的零时长动作，再重新调度：更高优先级任务在同一时刻立即抢占；同优先级按释放时间、再按输入顺序，且不抢占。`run` 恰在 horizon 结束时，只处理该任务紧随的零时长动作一次，其他任务不再执行。
+
+成功返回 200：
+
+- `status`：`completed`（全部完成）、`horizon`（到达边界仍有任务未完成）、`stalled`（无后续释放且所有未完成任务均阻塞）。
+- `stoppedAt`：实际停止时刻（完成时刻、停滞时刻或 horizon）。
+- `timeline`：只记录 `run` 区间，每项给出 `taskId`、`start`、`end`；同一任务的相邻区间合并。
+- `results`：按输入顺序给出 `executed`、`completion`（未完成为 `null`）、`state`（`completed`/`ready`/`blocked`/`unreleased`）、`deadlineStatus`（`met`/`missed`/`pending`，规则同一一次性任务）、`blockedAction`（仅阻塞时为 `"send"` 或 `"receive"`，否则 `null`）、`blockedOn`（仅阻塞时为邮箱名，否则 `null`）、`received`（按交付顺序记录 `mailbox`、`message`、`time`，无消息时为 `[]`）。
+
+分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
+
 ## 验证
 
 ```bash

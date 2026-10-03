@@ -33,5 +33,6 @@ func Handler() http.Handler {
 	mux.HandleFunc(analyzePath, handleAnalyze)
 	mux.HandleFunc(periodicAnalyzePath, handlePeriodicAnalyze)
 	mux.HandleFunc(mutexAnalyzePath, handleMutexAnalyze)
+	mux.HandleFunc(mailboxAnalyzePath, handleMailboxAnalyze)
 	return mux
 }
