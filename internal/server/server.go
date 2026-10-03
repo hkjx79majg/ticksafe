@@ -31,5 +31,6 @@ func Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(health{Status: "ok", Service: "ticksafe", Version: Version})
 	})
 	mux.HandleFunc(analyzePath, handleAnalyze)
+	mux.HandleFunc(periodicAnalyzePath, handlePeriodicAnalyze)
 	return mux
 }

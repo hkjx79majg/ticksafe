@@ -63,46 +63,16 @@ type scheduledTask struct {
 func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		writeAnalyzeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeAnalyzeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type")
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAnalyzeBodyBytes))
-	if err != nil {
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	// Reject duplicate keys and trailing tokens before the strict struct decode.
-	if err := rejectDuplicateKeys(body); err != nil {
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
 	var req analyzeRequest
-	if err := dec.Decode(&req); err != nil {
-		// Well-formed JSON with a value of the wrong JSON type violates the
-		// request schema (422); malformed syntax and unknown fields stay 400.
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) {
-			writeAnalyzeError(w, http.StatusUnprocessableEntity, "validation_failed")
-			return
-		}
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	var extra json.RawMessage
-	if err := dec.Decode(&extra); err != io.EOF {
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
+	if !decodeStrictRequest(w, r, &req) {
 		return
 	}
 	tasks, ok := validateAnalyzeRequest(&req)
 	if !ok {
-		writeAnalyzeError(w, http.StatusUnprocessableEntity, "validation_failed")
+		writeAPIError(w, http.StatusUnprocessableEntity, "validation_failed")
 		return
 	}
 	resp := simulateSchedule(tasks, *req.Horizon)
@@ -111,8 +81,51 @@ func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func writeAnalyzeError(w http.ResponseWriter, status int, code string) {
+func writeAPIError(w http.ResponseWriter, status int, code string) {
 	http.Error(w, `{"error":{"code":"`+code+`"}}`, status)
+}
+
+// decodeStrictRequest runs the shared request pipeline for JSON endpoints:
+// 405 is handled by callers before this point. It enforces the
+// application/json media type, the 1 MiB body limit, unique object keys, no
+// trailing content and no unknown fields, and maps decode failures to
+// 400 invalid_json or 422 validation_failed. It returns false after writing
+// the error response.
+func decodeStrictRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeAPIError(w, http.StatusUnsupportedMediaType, "unsupported_media_type")
+		return false
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAnalyzeBodyBytes))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	// Reject duplicate keys and trailing tokens before the strict struct decode.
+	if err := rejectDuplicateKeys(body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		// Well-formed JSON with a value of the wrong JSON type violates the
+		// request schema (422); malformed syntax and unknown fields stay 400.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			writeAPIError(w, http.StatusUnprocessableEntity, "validation_failed")
+			return false
+		}
+		writeAPIError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeAPIError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	return true
 }
 
 var errDuplicateKey = errors.New("duplicate JSON object key")

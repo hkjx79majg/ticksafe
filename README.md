@@ -34,6 +34,26 @@ go run ./cmd/ticksafe
 
 错误响应沿用 `{"error":{"code":...}}` 结构：非 POST 返回 405 `method_not_allowed`（含 `Allow: POST`）；非 `application/json` 返回 415 `unsupported_media_type`；语法错误、尾随内容或未知字段返回 400 `invalid_json`；约束错误返回 422 `validation_failed`。错误响应不包含部分结果。
 
+### 周期任务最坏响应时间分析
+
+`POST /v1/schedules/periodic/analyze` 在不展开时间线的前提下，用固定点迭代给出周期任务集的最坏响应时间（RTA）。分析模型限定为同步释放、单核、固定优先级、完全抢占、无阻塞且无释放抖动，服务不保存任何状态。请求需为 `application/json`：
+
+```json
+{
+  "tasks": [
+    {"id": "A", "priority": 1, "execution": 3, "period": 10, "deadline": 10},
+    {"id": "B", "priority": 0, "execution": 1, "period": 4, "deadline": 4}
+  ]
+}
+```
+
+- `tasks` 数量为 1–256。每项包含 `id`（沿用一次性任务规则且唯一）、`priority`（0–255 的唯一整数，数值越小优先级越高）、`execution`、`period`、`deadline`（均为不超过 `1e12` 的正整数，且 `deadline ≤ period`）。
+- 每个任务的响应时间从 `w0 = execution` 开始迭代：`w = execution + Σ ceil(w/period_j) · execution_j`（仅累加严格更高优先级任务的干扰），直到相邻两轮相等；收敛值不超过 `deadline` 时作为 `responseTime`。初值或任一轮结果超过 `deadline`，或中间结果超出 int64 时，`responseTime` 为 `null`。
+
+成功返回 200：`results` 按输入顺序给出 `id`、`responseTime`（未满足时为 `null`）和 `deadlineStatus`（`met`/`missed`）；仅当所有任务均为 `met` 时顶层 `schedulable` 为 `true`。相同请求的结果逐字段一致。
+
+错误语义与 `/v1/schedules/analyze` 一致：非 POST 返回 405 `method_not_allowed`（含 `Allow: POST`）；缺少媒体类型或非 `application/json`（允许媒体类型参数）返回 415 `unsupported_media_type`；JSON 语法错误、尾随内容、重复键、未知字段或请求体超过 1 MiB 返回 400 `invalid_json`；类型不符、字段缺失或约束失败返回 422 `validation_failed`。错误响应不包含部分结果。
+
 ## 验证
 
 ```bash
