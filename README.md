@@ -117,6 +117,36 @@ go run ./cmd/ticksafe
 
 分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
 
+## 计数信号量调度分析
+
+`POST /v1/schedules/semaphore/analyze` 在单核、区间 `[0,horizon)` 内模拟带计数信号量的固定优先级抢占调度。任务字段沿用一次性任务的 `id`、`priority`、`release`、`deadline` 与相同约束（不含 `execution`），并额外声明 1–256 个信号量；任务以 `actions` 描述程序：
+
+```json
+{
+  "horizon": 100,
+  "semaphores": [{"name": "S", "initial": 1, "maximum": 2}],
+  "tasks": [
+    {"id": "A", "priority": 0, "release": 0, "deadline": 50,
+     "actions": [{"wait": "S"}, {"run": 3}, {"post": "S"}]},
+    {"id": "B", "priority": 1, "release": 1, "deadline": 50,
+     "actions": [{"wait": "S"}, {"run": 2}, {"post": "S"}]}
+  ]
+}
+```
+
+- 每个信号量为 `{"name":..., "initial":..., "maximum":...}`：`name` 遵循 `id` 规则且唯一，`initial` 为 0–`maximum` 的整数，`maximum` 为 1–65535 的整数。
+- `actions` 为 1–1024 项，每项恰有一个动词：`{"run":N}`（正整数微秒）、`{"wait":"S"}`、`{"post":"S"}`；`wait`/`post` 引用必须指向已声明信号量。各任务及全局 `run` 总量不得溢出 int64。以上任一约束失败均返回 422 `validation_failed`。
+- 只有 `run` 耗时。`wait` 在计数非零时减一，否则阻塞在该信号量上。`post` 有等待者时把许可直接交付给最早阻塞者（同刻按任务输入顺序），其 `wait` 完成且计数不变；无等待者时计数加一。计数已为 `maximum` 且无等待者时，`post` 不改变计数并触发 overflow，分析当场停止。
+- 状态变化后先排空当前任务连续的零时长动作，再重新调度；更高优先级立即抢占，同优先级按 `release`、再按输入顺序且不抢占。无任务可运行时跳到下一 `release`；没有未来 `release` 且仍有阻塞任务时为 stalled。`run` 恰在 `horizon` 结束时，仅处理该任务紧随的零时长动作一次，其他任务不再执行。
+
+成功返回 200：
+
+- `status`：`completed`（全部完成）、`horizon`（到达边界仍有任务未完成）、`stalled`（无后续释放且所有未完成任务均阻塞）、`overflow`；`stoppedAt` 为实际停止时刻。仅 `overflow` 时还返回 `faultAt`（溢出时刻）、`faultTask` 与 `faultSemaphore`。
+- `timeline`：仅含 `run` 区间，每项给出 `taskId`、`start`、`end`；省略空闲时间并合并同一任务的相邻区间。
+- `results`：按输入顺序给出 `executed`、`completion`（未完成为 `null`）、`state`（`completed`/`ready`/`blocked`/`unreleased`）、`blockedOn`（仅阻塞时为信号量名，否则 `null`）与 `deadlineStatus`（`met`/`missed`/`pending`，规则同一次性任务）。
+
+分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
+
 ## 验证
 
 ```bash
