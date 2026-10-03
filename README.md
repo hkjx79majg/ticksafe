@@ -57,6 +57,36 @@ go run ./cmd/ticksafe
 
 该端点的错误语义与 `/v1/schedules/analyze` 完全一致：405 `method_not_allowed`（含 `Allow: POST`）、415 `unsupported_media_type`（允许媒体类型参数）、400 `invalid_json`（语法错误、尾随内容、重复键、未知字段或请求体超过 1 MiB）、422 `validation_failed`（类型不符、字段缺失或约束失败）；错误响应不含部分结果。
 
+## 互斥量与优先级继承分析
+
+`POST /v1/schedules/mutex/analyze` 在单核、区间 `[0,horizon)` 内模拟带优先级继承的互斥量调度。任务字段沿用一次性任务的 `id`、`priority`、`release`、`deadline` 与相同约束（不含 `execution`），并以 `actions` 描述程序：
+
+```json
+{
+  "horizon": 100,
+  "tasks": [
+    {"id": "A", "priority": 2, "release": 0, "deadline": 20,
+     "actions": [{"lock": "M"}, {"run": 10}, {"unlock": "M"}]},
+    {"id": "B", "priority": 0, "release": 3, "deadline": 20,
+     "actions": [{"lock": "M"}, {"run": 2}, {"unlock": "M"}]}
+  ]
+}
+```
+
+- `actions` 为 1–1024 项，每项恰有一个动词：`{"run":N}`（正整数微秒）、`{"lock":"M"}`、`{"unlock":"M"}`；互斥量名遵循 `id` 规则。程序必须平衡：不得重复持有同一锁、不得释放未持有的锁、结束时不得仍持锁；所有任务的 `run` 总量不得溢出 int64。以上任一约束失败均返回 422 `validation_failed`。
+- `lock`、`unlock` 与任务完成均不耗时；锁被占用时任务阻塞在该锁上。持有者继承其直接与间接等待者的最高（数值最小）优先级，等待关系一变化即重算。
+- 解锁时锁的所有权交给有效优先级最高的等待者，并列时按阻塞时刻、再按输入顺序；更高有效优先级的任务在同一时刻立即抢占，同优先级不抢占，首次选择按 `release`、再按输入顺序。
+- 状态变化后先排空当前任务连续的零时长动作，再重新调度。等待环首次形成的时刻即判死锁并停止分析；否则运行至全部任务完成或到达 `horizon`。
+
+成功返回 200：
+
+- `status`：`completed`（全部完成）、`horizon`（到达边界仍有任务未完成）、`deadlocked`。
+- `timeline`：仅含 `run` 区间，每项给出 `taskId`、`start`、`end`、`effectivePriority`；仅当相邻两区间这四项全部相同时才合并。
+- `results`：按输入顺序给出 `executed`、`completion`（未完成为 `null`）、`state`（`completed`/`ready`/`blocked`/`unreleased`）、`blockedOn`（仅阻塞时为锁名，否则 `null`）与 `deadlineStatus`（`met`/`missed`/`pending`，规则同一一次性任务）。
+- 死锁时额外给出 `deadlockAt`（成环时刻）与沿等待方向的 `cycle`（taskId 环，从输入顺序最早的环内任务开始）；非死锁时两者均为 `null`。
+
+分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
+
 ## 验证
 
 ```bash
