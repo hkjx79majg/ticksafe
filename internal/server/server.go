@@ -32,6 +32,7 @@ func Handler() http.Handler {
 	})
 	mux.HandleFunc(analyzePath, handleAnalyze)
 	mux.HandleFunc(periodicAnalyzePath, handlePeriodicAnalyze)
+	mux.HandleFunc(periodicSimulatePath, handlePeriodicSimulate)
 	mux.HandleFunc(mutexAnalyzePath, handleMutexAnalyze)
 	mux.HandleFunc(mailboxAnalyzePath, handleMailboxAnalyze)
 	mux.HandleFunc(semaphoreAnalyzePath, handleSemaphoreAnalyze)
