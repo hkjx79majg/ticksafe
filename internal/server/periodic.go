@@ -36,6 +36,7 @@ type periodicTask struct {
 	execution int64
 	period    int64
 	deadline  int64
+	offset    int64
 }
 
 type periodicTaskResult struct {

@@ -57,6 +57,32 @@ go run ./cmd/ticksafe
 
 该端点的错误语义与 `/v1/schedules/analyze` 完全一致：405 `method_not_allowed`（含 `Allow: POST`）、415 `unsupported_media_type`（允许媒体类型参数）、400 `invalid_json`（语法错误、尾随内容、重复键、未知字段或请求体超过 1 MiB）、422 `validation_failed`（类型不符、字段缺失或约束失败）；错误响应不含部分结果。
 
+## 周期作业确定性仿真
+
+`POST /v1/schedules/periodic/simulate` 在 `[0,horizon)` 内确定性仿真单核固定优先级完全抢占调度，把周期任务展开成按从 0 编号的作业。请求需为 `application/json`：
+
+```json
+{
+  "horizon": 20,
+  "tasks": [
+    {"id": "A", "priority": 1, "execution": 3, "period": 10, "deadline": 10},
+    {"id": "B", "priority": 0, "execution": 1, "period": 4, "deadline": 4, "offset": 2}
+  ]
+}
+```
+
+- `horizon`：正整数微秒区间 `[0,horizon)`，不超过 `1e12`。
+- 除新增的 `offset` 外，任务字段与约束沿用周期 WCRT 入口：`id`、唯一的 `priority`（0–255，越小越高）、`execution`/`period`/`deadline`（不超过 `1e12` 的正整数，且 `deadline <= period`），任务数 1–256。
+- `offset` 可选，缺省为 0；要求 `0 <= offset < period` 且 `offset < horizon`。任务在 `offset+k*period < horizon` 时释放编号从 0 开始的作业；全部任务释放作业总数超过 100000 时返回 422 `validation_failed`。
+- 每个作业独立执行 `execution` 微秒，绝对截止时间为 `release+deadline`；逾期作业继续执行。处理器选择 priority 数值最小的就绪作业，严格更高优先级释放时立即抢占，同优先级不抢占；同一任务的作业按编号顺序运行（C 大于 T 时后释放的作业排队）。忽略阻塞、抖动与切换开销；空闲时直接推进到下次释放，作业恰在 `horizon` 完成视为完成。
+- 成功返回 200：
+  - `status`：`completed`（窗口内释放的所有作业全部完成）或 `horizon`（仍有未完成作业）。
+  - `timeline`：按时间升序给出实际执行区间（`taskId`/`job`/`start`/`end`），省略空闲区间，仅合并同一作业的相邻区间。
+  - `results`：保持任务输入顺序，每个任务的 `jobs` 按编号排列，每项包含 `job`、`release`、`absoluteDeadline`、`executed`、`remaining`、`completion`（未完成时为 `null`）和 `deadlineStatus`；按时完成为 `met`，迟到完成、或未完成但绝对截止时间不晚于 `horizon` 为 `missed`，其余未完成为 `pending`。
+- 分析不保存任何状态，相同请求响应逐字段一致。
+
+错误语义与 `/v1/schedules/periodic/analyze` 完全一致：非 POST 返回 405 `method_not_allowed`（含 `Allow: POST`）；非 `application/json` 返回 415 `unsupported_media_type`；语法错误、尾随内容、重复键、未知字段或请求体超过 1 MiB 返回 400 `invalid_json`；字段缺失、类型不符或约束失败（含作业总数超限）返回 422 `validation_failed`。错误响应不含部分结果。
+
 ## 互斥量与优先级继承分析
 
 `POST /v1/schedules/mutex/analyze` 在单核、区间 `[0,horizon)` 内模拟带优先级继承的互斥量调度。任务字段沿用一次性任务的 `id`、`priority`、`release`、`deadline` 与相同约束（不含 `execution`），并以 `actions` 描述程序：
