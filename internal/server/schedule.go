@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	analyzePath         = "/v1/schedules/analyze"
-	maxAnalyzeBodyBytes = 1 << 20
-	maxHorizon          = 1_000_000_000_000
-	maxTasks            = 256
-	maxIDRunes          = 64
+	analyzePath  = "/v1/schedules/analyze"
+	maxBodyBytes = 1 << 20
+	maxHorizon   = 1_000_000_000_000
+	maxTasks     = 256
+	maxIDRunes   = 64
 )
 
 type analyzeTaskIn struct {
@@ -66,38 +66,8 @@ func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeAnalyzeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeAnalyzeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type")
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAnalyzeBodyBytes))
-	if err != nil {
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	// Reject duplicate keys and trailing tokens before the strict struct decode.
-	if err := rejectDuplicateKeys(body); err != nil {
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
 	var req analyzeRequest
-	if err := dec.Decode(&req); err != nil {
-		// Well-formed JSON with a value of the wrong JSON type violates the
-		// request schema (422); malformed syntax and unknown fields stay 400.
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) {
-			writeAnalyzeError(w, http.StatusUnprocessableEntity, "validation_failed")
-			return
-		}
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	var extra json.RawMessage
-	if err := dec.Decode(&extra); err != io.EOF {
-		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
+	if !decodeStrictJSON(w, r, &req) {
 		return
 	}
 	tasks, ok := validateAnalyzeRequest(&req)
@@ -113,6 +83,51 @@ func handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 func writeAnalyzeError(w http.ResponseWriter, status int, code string) {
 	http.Error(w, `{"error":{"code":"`+code+`"}}`, status)
+}
+
+// decodeStrictJSON implements the request-reading rules shared by every JSON
+// analysis endpoint. It writes the error response itself and reports whether
+// the request may proceed; the caller therefore has no partial result to leak.
+//
+// Ordering: non-application/json (including a missing media type) is 415; a
+// body larger than 1 MiB or any syntactic defect (bad syntax, trailing
+// content, duplicate or unknown keys) is 400 invalid_json; well-formed JSON
+// whose values do not match the target schema is 422 validation_failed.
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeAnalyzeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type")
+		return false
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	// Reject duplicate keys and trailing tokens before the strict struct decode.
+	if err := rejectDuplicateKeys(body); err != nil {
+		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		// Well-formed JSON with a value of the wrong JSON type violates the
+		// request schema (422); malformed syntax and unknown fields stay 400.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			writeAnalyzeError(w, http.StatusUnprocessableEntity, "validation_failed")
+			return false
+		}
+		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeAnalyzeError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	return true
 }
 
 var errDuplicateKey = errors.New("duplicate JSON object key")

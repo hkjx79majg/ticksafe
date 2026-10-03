@@ -34,6 +34,29 @@ go run ./cmd/ticksafe
 
 错误响应沿用 `{"error":{"code":...}}` 结构：非 POST 返回 405 `method_not_allowed`（含 `Allow: POST`）；非 `application/json` 返回 415 `unsupported_media_type`；语法错误、尾随内容或未知字段返回 400 `invalid_json`；约束错误返回 422 `validation_failed`。错误响应不包含部分结果。
 
+## 周期任务最坏响应时间分析
+
+`POST /v1/schedules/periodic/analyze` 在不展开时间线的前提下，用固定点迭代计算各周期任务的最坏响应时间（WCRT）。模型限定为同步释放、单核、固定优先级、完全抢占、无阻塞、无释放抖动，且 `deadline <= period`。请求需为 `application/json`：
+
+```json
+{
+  "tasks": [
+    {"id": "A", "priority": 2, "execution": 2, "period": 6, "deadline": 6},
+    {"id": "B", "priority": 1, "execution": 1, "period": 4, "deadline": 4}
+  ]
+}
+```
+
+- 每个任务包含 `id`（沿用一次性任务的规则且唯一）、`priority`（0–255 唯一整数，越小越高）、`execution`/`period`/`deadline`（不超过 `1e12` 的正整数，且 `deadline <= period`）。任务数 1–256。
+- 对任务 $i$，响应时间初值 $w_0 = C_i$，迭代
+  $w_{k+1} = C_i + \sum_{j:\,prio(j)<prio(i)}\lceil w_k/T_j\rceil C_j$，
+  收敛且不超过 deadline 时，固定点作为 `responseTime`；初值或任一轮结果超过 deadline（含高优先级总利用率 $\sum C_j/T_j \ge 1$ 导致无固定点）时，`responseTime` 为 `null`。计算按 int64 边界饱和处理，溢出即视为超过 deadline，不回绕、不产生 5xx。
+- 实现以线性下界 $C_i/(1-U)$ 起跳，规避远距离不动点的伪多项式爆炸；起跳点经高精度算术严格保证不越过最小固定点，结论与逐轮迭代逐字段一致。
+
+成功返回 200：顶层 `schedulable` 仅当所有任务都为 `met` 时为 `true`；`results` 按输入顺序给出 `id`、`responseTime`（未满足时为 `null`）和 `deadlineStatus`（`met`/`missed`）。分析不保存任何状态，相同请求的结果逐字段一致。
+
+该端点的错误语义与 `/v1/schedules/analyze` 完全一致：405 `method_not_allowed`（含 `Allow: POST`）、415 `unsupported_media_type`（允许媒体类型参数）、400 `invalid_json`（语法错误、尾随内容、重复键、未知字段或请求体超过 1 MiB）、422 `validation_failed`（类型不符、字段缺失或约束失败）；错误响应不含部分结果。
+
 ## 验证
 
 ```bash
