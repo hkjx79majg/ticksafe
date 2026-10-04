@@ -38,5 +38,6 @@ func Handler() http.Handler {
 	mux.HandleFunc(semaphoreAnalyzePath, handleSemaphoreAnalyze)
 	mux.HandleFunc(interruptAnalyzePath, handleInterruptAnalyze)
 	mux.HandleFunc(stackAnalyzePath, handleStackAnalyze)
+	mux.HandleFunc(ticklessSimulatePath, handleTicklessSimulate)
 	return mux
 }
