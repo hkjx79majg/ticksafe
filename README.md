@@ -203,6 +203,37 @@ go run ./cmd/ticksafe
 
 分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
 
+## 栈深度分析
+
+`POST /v1/stacks/analyze` 接收调用图，计算各入口的最坏栈占用并判定预算是否超限。请求需为 `application/json`：
+
+```json
+{
+  "functions": [
+    {"id": "main", "frameBytes": 64},
+    {"id": "work", "frameBytes": 128}
+  ],
+  "calls": [
+    {"caller": "main", "callee": "work", "overheadBytes": 16}
+  ],
+  "entrypoints": [
+    {"entry": "main", "stackLimit": 1024}
+  ]
+}
+```
+
+- `functions` 为 1–4096 项：`id` 沿用任务 `id` 规则且唯一，`frameBytes` 为 0–1e12 的整数。
+- `calls` 为 0–256 项（可省略）：`caller` 与 `callee` 必须引用已声明函数，`overheadBytes` 为 0–1e12 的整数。
+- `entrypoints` 为 1–256 项：`entry` 必须引用已声明函数且不重复，`stackLimit` 为 1–1e16 的整数。以上任一约束失败均返回 422 `validation_failed`。
+- 每个入口仅分析其可达子图。有限路径的占用为沿途 `frameBytes` 与 `overheadBytes` 之和，`requiredBytes` 取所有路径的最大值；并列时按 `calls` 顺序逐层取先者，`worstPath` 给出该路径上的函数 `id`。可达递归环表示无有限上界：按 `calls` 顺序深度优先遍历，`cycle` 返回第一个回边闭合的环，从回边目标起沿调用方向排列且不重复起点；不可达环不影响结果。
+
+成功返回 200：
+
+- `results` 按入口顺序给出 `entry`、`stackLimit`、`requiredBytes`、`status`、`worstPath` 与 `cycle`。有限结果的 `status` 为 `within_limit` 或 `exceeded`，`cycle` 为空数组；递归结果为 `unbounded`，`requiredBytes` 为 `null`，`worstPath` 为空数组。
+- 顶层 `safe` 仅当全部入口均为 `within_limit` 时为 `true`；`analyzable` 仅当没有 `unbounded` 结果时为 `true`。
+
+分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
+
 ## 验证
 
 ```bash
