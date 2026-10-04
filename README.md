@@ -174,6 +174,35 @@ go run ./cmd/ticksafe
 
 分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
 
+## 中断与不可抢占临界区分析
+
+`POST /v1/schedules/interrupt/analyze` 在单核、区间 `[0,horizon)` 内模拟带中断与不可抢占临界区的固定优先级调度。任务字段沿用一次性任务的 `id`、`priority`、`release`、`deadline` 与相同约束（不含 `execution`），任务以 `actions` 描述程序，另声明 1–4096 个中断：
+
+```json
+{
+  "horizon": 100,
+  "tasks": [
+    {"id": "A", "priority": 1, "release": 0, "deadline": 50,
+     "actions": [{"run": 2}, {"critical": 5}, {"run": 1}]}
+  ],
+  "interrupts": [
+    {"id": "I1", "priority": 0, "arrival": 3, "execution": 2, "deadline": 20}
+  ]
+}
+```
+
+- `actions` 为 1–1024 项，每项恰有一个动词：`{"run":N}` 或 `{"critical":N}`，`N` 为正整数微秒。每个中断含唯一 `id`（规则同任务 `id`，中断之间唯一）、`priority`（0–255，越小越高）、`arrival`（区间内整数）、`execution`（正整数）与 `deadline`（大于 `arrival`）。各任务动作总量以及全部动作与中断 `execution` 的全局总量不得溢出 int64，溢出返回 422 `validation_failed`。
+- 中断一律优先于任务。`critical` 动作从开始到结束（或 `horizon`）不可抢占；`run` 动作可被更高优先级任务或任意中断抢占。中断只被优先级数值更小的中断抢占，同级不抢占，被抢占的中断挂起后恢复；任务间规则同一次性任务。同一时刻先纳入全部到达与释放事件，并列按 `arrival`/`release`、再按输入顺序。
+
+成功返回 200：
+
+- `status`：`completed`（全部任务与中断完成）或 `horizon`（到达边界仍有未完成者）；`stoppedAt` 为完成时刻或 `horizon`。
+- `timeline`：每项给出 `actorType`（`task`/`interrupt`）、`actorId`、`mode`（`run`/`critical`）、`start`、`end`；省略空闲时间，仅合并同执行者同模式的相邻区间。
+- `taskResults`/`interruptResults`：按各自输入顺序给出 `id`、`executed`、`completion`（未完成为 `null`）与 `deadlineStatus`（`met`/`missed`/`pending`，规则同一次性任务）；中断另含 `start` 与 `latency`（`start - arrival`），未开始时 `start`、`completion`、`latency` 均为 `null`。
+- `criticalSections`：按任务输入顺序及零基 `actionIndex` 排列，每项给出 `taskId`、`actionIndex`、`start`、`end`、`observedDuration`、`completed`；未开始的临界区为 `null`、`null`、`0`、`false`，被 `horizon` 截断时 `end` 为 `null`。
+
+分析不保存任何状态，相同请求逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
+
 ## 验证
 
 ```bash
