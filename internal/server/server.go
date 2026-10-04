@@ -37,5 +37,6 @@ func Handler() http.Handler {
 	mux.HandleFunc(mailboxAnalyzePath, handleMailboxAnalyze)
 	mux.HandleFunc(semaphoreAnalyzePath, handleSemaphoreAnalyze)
 	mux.HandleFunc(interruptAnalyzePath, handleInterruptAnalyze)
+	mux.HandleFunc(stackAnalyzePath, handleStackAnalyze)
 	return mux
 }
