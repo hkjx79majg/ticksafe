@@ -84,6 +84,34 @@ go run ./cmd/ticksafe
 
 仿真不保存任何状态，相同请求的响应逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405、415、400、422 错误语义；错误响应不含部分结果。
 
+## Tickless 按需唤醒仿真
+
+`POST /v1/timers/tickless/simulate` 模拟单调微秒时钟的 tickless 按需唤醒：不生成固定周期 tick，每次唤醒都由尚未交付的最早到期事件推导。请求需为 `application/json`：
+
+```json
+{
+  "horizon": 20,
+  "coalesceWindow": 3,
+  "maxSleep": 8,
+  "timers": [
+    {"id": "A", "first": 2, "period": 5},
+    {"id": "B", "first": 11, "period": 0}
+  ]
+}
+```
+
+- `horizon`：1–1e12 的整数微秒区间 `[0,horizon)`；`maxSleep` 同为 1–1e12；`coalesceWindow` 为 0–1e12。
+- `timers` 含 1–256 项：每项含 `id`（沿用现有 `id` 规则且唯一）、位于 `[0,horizon)` 的 `first`、非负 `period`。`period` 为 0 表示一次性定时器；否则在 `first+k*period < horizon` 时产生从 0 编号的事件，名义时间始终由 `first` 推导，延迟不会导致漂移。
+- 展开的事件总数或实际唤醒数超过 100000 时返回 422 `validation_failed`。
+- 仿真从时刻 0 开始。令 `d` 为尚未交付的最早名义到期时间、`now` 为当前时刻，则下一次唤醒时刻为 `min(d+coalesceWindow, now+maxSleep, horizon)`。唤醒时交付名义时间不晚于当前时刻的全部事件（名义时间早于 `horizon` 的事件允许在 `horizon` 时交付），排序依次按名义时间、定时器输入顺序、事件编号。`maxSleep` 导致未交付任何事件的空唤醒仍作为一次唤醒保留。
+
+成功返回 200：
+
+- `wakeupCount`：实际唤醒次数；`wakeups` 按时间升序给出每次唤醒，每项含 `at` 与 `fired`；`fired` 记录 `id`、`event`、`scheduledAt` 与 `lateness`（= `at − scheduledAt`），空唤醒为 `[]`。
+- `results`：按定时器输入顺序给出各定时器的 `id` 与 `events`，每个事件含 `event`、`scheduledAt`、`firedAt`、`lateness`；每个事件恰好交付一次。
+
+仿真不保存任何状态，相同请求的响应逐字段一致。该端点复用现有 JSON 媒体类型、1 MiB 请求体上限、严格解码以及 405（含 `Allow: POST`）、415、400 `invalid_json`、422 `validation_failed` 错误语义；错误响应不含部分结果。
+
 ## 互斥量与优先级继承分析
 
 `POST /v1/schedules/mutex/analyze` 在单核、区间 `[0,horizon)` 内模拟带优先级继承的互斥量调度。任务字段沿用一次性任务的 `id`、`priority`、`release`、`deadline` 与相同约束（不含 `execution`），并以 `actions` 描述程序：
